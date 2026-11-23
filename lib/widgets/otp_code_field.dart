@@ -327,10 +327,13 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
   static final String _sentinel = defaultTargetPlatform == TargetPlatform.iOS ? '\u200b' : '';
 
   late final TextEditingController _inputController = TextEditingController();
+  final GlobalKey<EditableTextState> _editableKey = GlobalKey<EditableTextState>();
+  late final AppLifecycleListener _lifecycleListener;
 
   @override
   void initState() {
     super.initState();
+    _lifecycleListener = AppLifecycleListener(onResume: _handleResume);
     widget.focusNode.addListener(_handleStateChanged);
     widget.controller.addListener(_handleStateChanged);
     _syncInput();
@@ -355,7 +358,19 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
     widget.focusNode.removeListener(_handleStateChanged);
     widget.controller.removeListener(_handleStateChanged);
     _inputController.dispose();
+    _lifecycleListener.dispose();
     super.dispose();
+  }
+
+  // Flutter restores focus when the app resumes, but Android can ignore the
+  // keyboard request made before the window regains focus, so ask again once
+  // the restored focus has settled.
+  void _handleResume() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && widget.focusNode.hasFocus) {
+        _editableKey.currentState?.requestKeyboard();
+      }
+    });
   }
 
   void _handleStateChanged() {
@@ -405,7 +420,14 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
       },
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
+        onTap: widget.enabled
+            ? () {
+                widget.onTap();
+                // Re-show the keyboard if the field kept focus but the
+                // keyboard was dismissed (e.g. after returning to the app).
+                _editableKey.currentState?.requestKeyboard();
+              }
+            : null,
         onLongPressStart: widget.enabled ? widget.onLongPressStart : null,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
@@ -426,6 +448,7 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
                   child: Opacity(
                     opacity: 0,
                     child: EditableText(
+                      key: _editableKey,
                       controller: _inputController,
                       focusNode: widget.focusNode,
                       readOnly: !widget.enabled,
