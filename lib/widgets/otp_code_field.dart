@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:deskconn_mobile_app/theme/colors.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -320,11 +321,22 @@ class _OtpDigitField extends StatefulWidget {
 }
 
 class _OtpDigitFieldState extends State<_OtpDigitField> {
+  // The iOS soft keyboard sends no key event for backspace on an empty field,
+  // so a zero-width sentinel is kept in the hidden input and its deletion is
+  // treated as backspace.
+  static final String _sentinel = defaultTargetPlatform == TargetPlatform.iOS ? '\u200b' : '';
+
+  late final TextEditingController _inputController = TextEditingController();
+  final GlobalKey<EditableTextState> _editableKey = GlobalKey<EditableTextState>();
+  late final AppLifecycleListener _lifecycleListener;
+
   @override
   void initState() {
     super.initState();
+    _lifecycleListener = AppLifecycleListener(onResume: _handleResume);
     widget.focusNode.addListener(_handleStateChanged);
     widget.controller.addListener(_handleStateChanged);
+    _syncInput();
   }
 
   @override
@@ -337,6 +349,7 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_handleStateChanged);
       widget.controller.addListener(_handleStateChanged);
+      _syncInput();
     }
   }
 
@@ -344,13 +357,45 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
   void dispose() {
     widget.focusNode.removeListener(_handleStateChanged);
     widget.controller.removeListener(_handleStateChanged);
+    _inputController.dispose();
+    _lifecycleListener.dispose();
     super.dispose();
   }
 
+  // Flutter restores focus when the app resumes, but Android can ignore the
+  // keyboard request made before the window regains focus, so ask again once
+  // the restored focus has settled.
+  void _handleResume() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && widget.focusNode.hasFocus) {
+        _editableKey.currentState?.requestKeyboard();
+      }
+    });
+  }
+
   void _handleStateChanged() {
+    _syncInput();
     if (mounted) {
       setState(() {});
     }
+  }
+
+  void _syncInput() {
+    final text = '$_sentinel${widget.controller.text}';
+    if (_inputController.text == text) return;
+    _inputController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+
+  void _handleInputChanged(String value) {
+    if (_sentinel.isNotEmpty && value.isEmpty) {
+      widget.onBackspace();
+    } else {
+      widget.onChanged(value.replaceAll(_sentinel, ''));
+    }
+    _syncInput();
   }
 
   @override
@@ -375,7 +420,14 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
       },
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: widget.enabled ? widget.onTap : null,
+        onTap: widget.enabled
+            ? () {
+                widget.onTap();
+                // Re-show the keyboard if the field kept focus but the
+                // keyboard was dismissed (e.g. after returning to the app).
+                _editableKey.currentState?.requestKeyboard();
+              }
+            : null,
         onLongPressStart: widget.enabled ? widget.onLongPressStart : null,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
@@ -396,7 +448,8 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
                   child: Opacity(
                     opacity: 0,
                     child: EditableText(
-                      controller: widget.controller,
+                      key: _editableKey,
+                      controller: _inputController,
                       focusNode: widget.focusNode,
                       readOnly: !widget.enabled,
                       showCursor: false,
@@ -407,8 +460,8 @@ class _OtpDigitFieldState extends State<_OtpDigitField> {
                       textAlign: TextAlign.center,
                       style: widget.textStyle ?? const TextStyle(),
                       maxLines: 1,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                      onChanged: widget.onChanged,
+                      inputFormatters: [FilteringTextInputFormatter.allow(RegExp('[0-9\u200b]'))],
+                      onChanged: _handleInputChanged,
                       onSubmitted: (_) => FocusScope.of(context).unfocus(),
                     ),
                   ),
